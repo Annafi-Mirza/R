@@ -1,0 +1,17 @@
+Hello! This is a small data analysis project of mine
+that creates a data frame containing the top seasonal
+decks or palettes of chracters from the mobile video
+game called "Clash Royale."
+
+The deck analyzes what characters appear in these
+top seasonal decks and determines whether they are
+overrepresented or underrepresented compared to the
+general population of all characters that exist in the
+game.
+
+The characters are that overrepresented in the most recent
+season are most likely to get nerfed in the upcoming season,
+and vice-versa.
+
+I used RStudio to utilize the .rmd file, so please use that for
+the best experience.
