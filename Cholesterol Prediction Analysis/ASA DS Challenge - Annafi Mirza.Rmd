@@ -345,22 +345,22 @@ NOTE: DO NOT RUN CODE BLOCK BELOW MORE THAN ONCE! The `randomForest` results too
 ```{r}
 # Creates RMSE values for randomForest and ranger
 # for 100 different seeds
-seeds <- 1:100
 # COMMENTED OUT TO PREVENT ACCIDENTAL RUNNINGS
-#rf_results     <- sapply(seeds, rf_rmse)
-#ranger_results <- sapply(seeds, ranger_rmse)
+# seeds <- 1:100
+# rf_results     <- sapply(seeds, rf_rmse)
+# ranger_results <- sapply(seeds, ranger_rmse)
 ```
 
 ```{r}
 # Summary Statistics
-summary(rf_results)
-summary(ranger_results)
-
-mean(rf_results)
-mean(ranger_results)
-
-sd(rf_results)
-sd(ranger_results)
+# summary(rf_results)
+# summary(ranger_results)
+# 
+# mean(rf_results)
+# mean(ranger_results)
+# 
+# sd(rf_results)
+# sd(ranger_results)
 ```
 
 ## Results:
@@ -380,32 +380,32 @@ SD of Ranger: 0.01627517
 From these results, it seems that `ranger` is consistently more accurate than `randomForest` is, even if the difference is quite small. Just as confirmation, we will conduct permutation testing to see if this difference is statistically significant.
 
 ```{r}
-set.seed(123)
-
-# Differences between models
-# Positive means ranger is better
-# Negative means randomForest is better
-diffs <- ranger_results - rf_results
-# Mean difference between models
-observed_diff <- mean(diffs)
-
-# Number of test statistic
-B <- 10000
-# We randomly decide whether or not, for each statistic,
-# the winner of the RMSE difference is the ranger model
-# (the sign is positive) or the randomForest model
-# (the sign is negative) and recalculate the differences.
-perm_diffs <- replicate(B, {
-  signs <- sample(c(-1, 1), length(diffs), replace = TRUE)
-  mean(diffs * signs)
-})
-
-# How many differences in this space where the ranger
-# and randomForest models are randomly chosen to win
-# are as great or greater than the observed difference of
-# +0.00736?
-p_value <- mean(abs(perm_diffs) >= abs(observed_diff))
-p_value
+# set.seed(123)
+# 
+# # Differences between models
+# # Positive means ranger is better
+# # Negative means randomForest is better
+# diffs <- ranger_results - rf_results
+# # Mean difference between models
+# observed_diff <- mean(diffs)
+# 
+# # Number of test statistic
+# B <- 10000
+# # We randomly decide whether or not, for each statistic,
+# # the winner of the RMSE difference is the ranger model
+# # (the sign is positive) or the randomForest model
+# # (the sign is negative) and recalculate the differences.
+# perm_diffs <- replicate(B, {
+#   signs <- sample(c(-1, 1), length(diffs), replace = TRUE)
+#   mean(diffs * signs)
+# })
+# 
+# # How many differences in this space where the ranger
+# # and randomForest models are randomly chosen to win
+# # are as great or greater than the observed difference of
+# # +0.00736?
+# p_value <- mean(abs(perm_diffs) >= abs(observed_diff))
+# p_value
 ```
 
 p-value: **0.0027**\
