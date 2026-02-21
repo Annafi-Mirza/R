@@ -1,0 +1,600 @@
+---
+title: "A Prediction Model of HDL Cholesterol"
+date: "Feburary 2026 | ASA South Florida Student Data Challenge"
+author: "Annafi Mirza"
+output:
+  word_document: default
+assignment_name: "ASAProjectByAnnafiMirza"
+always_allow_html: true
+---
+
+# Introduction
+
+The purpose of this project is to create the most optimal multiple regression model that best predicts HDL-cholesterol levels in a test dataset.
+
+# Preparation
+
+## Installing Necessary Libraries
+
+```{r}
+# If this snippet is empty, then all libraries have been installed
+```
+
+## Loading Necessary Libraries
+
+```{r}
+library(tidyverse)
+library(ranger)
+library(randomForest)
+#library(car)
+library(MASS)
+library(glmnet)
+```
+
+## Loading the Dataset
+
+```{r}
+tmp <- tempfile()
+download.file("https://luminwin.github.io/ASASF/train.rds", tmp, mode = "wb")
+train <- readRDS(tmp)
+
+### View Variable Labels
+
+lapply(train, attr, "label")
+
+### Download Test Data
+
+download.file("https://luminwin.github.io/ASASF/test.rds", tmp, mode = "wb")
+test <- readRDS(tmp)
+```
+
+## Cleaning the Dataset
+
+The RDS files will become tibbles for ease of use. Also, multiple variables in both datasets that should be categorical, like race, are instead numeric. They will be transformed into factors. Additionally, some variables like DR1EXMR need to be removed as they are not predictors but rather extraneous info like interview codes.
+
+```{r}
+# Transforming into tibbles
+train_clean <- as_tibble(train)
+test_clean <- as_tibble(test)
+
+# Removing extraneous interviewer ID code column
+train_clean <- train_clean |> dplyr::select(-DR1EXMER)
+test_clean <- test_clean |> dplyr::select(-DR1EXMER)
+
+# Defining what categorical columns to convert to factors
+factor_variables <- c(
+  "RIAGENDR", "RIDRETH1", "RIDRETH3", "DMDMARTZ",
+  "ALQ111", "ALQ121", "DRQSDIET",
+  "DRD340", "DRD360", "DRABF",
+  "DR1MRESP", "DR1HELP", "DR1DAY",
+  "DBQ095Z", "DRQSPREP", "DR1STY",
+  "DR1_300", "DR1TWSZ", "DR1LANG",
+  "DR1EXMER"
+)
+
+# Converting categorical columns to factors
+factor_variables <- intersect(factor_variables, names(train_clean))
+train_clean <- train_clean |> mutate(across(all_of(factor_variables), as.factor))
+test_clean <- test_clean |> mutate(across(all_of(factor_variables), as.factor))
+
+```
+
+## Removing Variables With Only 1 Factor
+
+Some of the categorical variables only have 1 factor or condition. This means that all observations have the same value for that variable, so it is meaningless and has no bearing on the prediction. They must be removed not only because they are dead weight but they also mess with the dummy encoding that is needed by some of the regression models that will be tested.
+
+```{r}
+# All 1 level factor variables
+one_level_vars <- names(train_clean)[
+  sapply(train_clean, function(x) length(unique(x)) == 1)
+]
+one_level_vars
+
+# Removing from both sets
+train_clean <- train_clean |>
+  dplyr::select(-all_of(one_level_vars))
+
+test_clean <- test_clean |>
+  dplyr::select(-all_of(one_level_vars))
+```
+
+These variables are removed from the test dataset as well because, even if they did have more than 1 level per factor removed, our models would have no way of predicting based on these factors as they were trained on the training data set, whose factors only had 1 level.
+
+## Splitting the Training Dataset
+
+The given test dataset does not have its HDL cholesterol values listed, so the training data will be split into a training set and validity set; the latter will be used as a proto-test set to prove a given model's efficacy.
+
+```{r}
+# Ensures that training dataset is always split
+# in the exact same way
+set.seed(123)
+
+train_index <- sample(seq_len(nrow(train_clean)), size = 0.8 * nrow(train_clean))
+
+train_split <- train_clean[train_index, ]
+valid_split <- train_clean[-train_index, ]
+```
+
+# Basic Linear Regression Model
+
+The first regression model that will be tested is R's built-in `lm()` model. This will provide a benchmark for the other models and can also demonstrate whether or not there is linearity between the predictors and outcome variable.
+
+```{r}
+# Creating the model
+model <- lm(LBDHDD_outcome ~ ., data = train_split)
+# Include all variables, then pluck variables that have the worst p-values (or least imporant)
+updated_model <- step(model, direction = "backward", trace = 0)
+summary(updated_model)
+```
+
+## Testing Validity
+
+```{r}
+# Predicting on validity dataset
+lm_pred <- predict(updated_model, newdata = valid_split)
+```
+
+## Evaluating Efficacy
+
+A root mean squared error for any model should generally be lower than the standard deviation of the test dataset's outcome variable. If they are equal, then our predictions are no better than using the mean of the set for every prediction, which should be \~1 SD on average from the real values if they are standardized.
+
+```{r}
+rmse_lm <- sqrt(mean((valid_split$LBDHDD_outcome - lm_pred)^2))
+rmse_lm
+sd(valid_split$LBDHDD_outcome)
+```
+
+# Random Forest Regression Model
+
+The second regression model that will be tested is the random forest regression model. This model's main advantage and reason for being tested is its excellence in modeling non-linear relationships, and this dataset is likely to have a non-linear relationship between HDL cholesterol and its predictors by its very nature.
+
+## Creating the Model
+
+```{r}
+# Creates model
+set.seed(123)
+rf_model <- randomForest(LBDHDD_outcome ~ ., data = train_split, mtry = 62, nodesize = 5, importance = TRUE)
+print(rf_model)
+# MSE of all variables included
+randomForest::importance(rf_model)
+varImpPlot(rf_model, type = 1)
+```
+
+## Calculating Correct mtry to Use
+
+This is an important factor of `randomForest` and is the number of variables to randomly select to build any particular decision tree.
+
+```{r}
+tuneRF(
+  x = train_split |> dplyr::select(-LBDHDD_outcome),
+  y = train_split$LBDHDD_outcome
+)
+```
+
+The best possible `mtry` value is shown above. When tested previously, it was 62, and, regardless of what `tuneRF()` shows now, from testing, 62 is still the best working value found.
+
+## Finetuning the Model
+
+We will rid the model of the least performing predictors (bottom 25% quartile) to increase statistical power and apply the aforementioned `mtry` value calculated.
+
+```{r}
+# Grabs least important variables
+imp <- randomForest::importance(rf_model)[, "%IncMSE"] 
+threshold <- quantile(imp, 0.25, na.rm = TRUE)
+keep_vars <- names(imp[imp > threshold])
+
+# Printing out the variables that were kept if need be
+#keep_vars
+
+# To ensure the same random pattern is captured every time
+set.seed(123)
+
+# New model w/ least important variables removed and
+# new mtry value
+rf_reduced <- randomForest(
+  reformulate(keep_vars, response = "LBDHDD_outcome"),
+  data = train_split,
+  mtry = 62,
+  nodesize = 5,
+  importance = TRUE
+)
+```
+
+We will also validate that the default value for the number of trees in the `randomForest` model, 500, is the most optimal, as the error rate flatlines at that amount, as shown below.
+
+```{r}
+plot(rf_reduced)
+```
+
+## Testing Validity
+
+```{r}
+# Includes both raw and finetuned models
+rf_pred <- predict(rf_model, newdata = valid_split)
+rf_reduced_pred <- predict(rf_reduced, newdata = valid_split)
+```
+
+## Evaluating Efficacy
+
+```{r}
+# Includes both raw and finetuned models
+rmse_rf <- sqrt(mean((valid_split$LBDHDD_outcome - rf_pred)^2))
+rmse_rf_reduced <- sqrt(mean((valid_split$LBDHDD_outcome - rf_reduced_pred)^2))
+rmse_rf
+rmse_rf_reduced
+sd(valid_split$LBDHDD_outcome)
+```
+
+The RMSE for the finetuned model is \~4.79 at `mtry` = 62 and is \> 4.8 when `mtry` is \< or \> 62. RMSE is also \> 4.791 when `nodesize` is \< or \> 5.
+
+## Testing Ranger As Alternative to RandomForest
+
+The `ranger()` model is touted to be a faster, more modern implementation of the random forest algorithm than `randomForest()` is, so we are going to implement it and test its RMSE.
+
+```{r}
+# A raw implementation w/ the same numtree, mtry, and
+# nodesize values as the previous randomForest model
+rf_ranger <- ranger(
+  formula = LBDHDD_outcome ~ .,
+  data = train_split,
+  num.trees = 500,
+  mtry = 62,
+  min.node.size = 5,
+  importance = "permutation",
+  seed = 125
+)
+imp2 <- rf_ranger$variable.importance
+#sort(imp, decreasing = TRUE)
+```
+
+```{r}
+# Removes bottom 25% performing variables
+threshold <- quantile(imp2, 0.25)
+keep_vars2 <- names(imp[imp2 > threshold])
+
+rf_ranger_reduced <- ranger(
+  reformulate(keep_vars2, response = "LBDHDD_outcome"),
+  data = train_split,
+  num.trees = 500,
+  mtry = 62,
+  min.node.size = 5,
+  importance = "permutation",
+  seed = 123
+)
+```
+
+```{r}
+# Includes both raw and finetuned models
+
+# Predictions
+ranger_pred <- predict(rf_ranger, data = valid_split)$predictions
+ranger_pred_reduced <- predict(rf_ranger_reduced, data = valid_split)$predictions
+
+# RMSE values
+rmse_ranger <- sqrt(mean((valid_split$LBDHDD_outcome - ranger_pred)^2))
+rmse_ranger
+rmse_ranger_reduced <- sqrt(mean((valid_split$LBDHDD_outcome - ranger_pred_reduced)^2))
+rmse_ranger_reduced
+```
+
+Below is a `ranger` model more closely aligned with the original `randomForest` model.
+
+```{r}
+p <- length(keep_vars2)
+
+rf_ranger_aligned <- ranger(
+  reformulate(keep_vars2, response = "LBDHDD_outcome"),
+  data = train_split,
+  num.trees = 500,
+  mtry = floor(p / 3),
+  min.node.size = 5,
+  splitrule = "variance",
+  respect.unordered.factors = "order",
+  importance = "permutation",
+  seed = 123
+)
+```
+
+```{r}
+ranger_pred <- predict(rf_ranger_aligned, data = valid_split)$predictions
+rmse_ranger <- sqrt(mean((valid_split$LBDHDD_outcome - ranger_pred)^2))
+rmse_ranger
+```
+
+Note: For both the `randomForest` and `ranger` models, taking out the bottom 25% quartile of predictors seemed to have increased their RMSE values. This is likely because forest models are different from other models in that more variables, no matter how important they are, are better for increasing the diversity of the trees and, thus, the average of said trees.
+
+## RandomForest vs. Ranger Based on Seed
+
+After numerous manual comparisons, different seed values seem to lead to different RMSE values for the `randomForest` and `ranger` models, and each model sometimes beats out the other based on seed. We will compare their RMSE distributions based on 100 different seed values to determine whether these differences are simply noise or statistically significant.
+
+```{r}
+# Function for calculating RMSE for randomForest
+rf_rmse <- function(seed) {
+  set.seed(seed)
+  
+  rf <- randomForest(
+    LBDHDD_outcome ~ .,
+    data = train_split,
+    mtry = 62,
+    nodesize = 5
+  )
+  
+  preds <- predict(rf, newdata = valid_split)
+  sqrt(mean((valid_split$LBDHDD_outcome - preds)^2))
+}
+
+# Function for calculating RMSE for ranger
+ranger_rmse <- function(seed) {
+  set.seed(seed)
+  
+  rf <- ranger(
+    LBDHDD_outcome ~ .,
+    data = train_split,
+    mtry = 62,
+    num.trees = 500,
+    min.node.size = 5
+  )
+  
+  preds <- predict(rf, data = valid_split)$predictions
+  sqrt(mean((valid_split$LBDHDD_outcome - preds)^2))
+}
+```
+
+NOTE: DO NOT RUN CODE BLOCK BELOW MORE THAN ONCE! The `randomForest` results took \~15 minutes, whereas the ranger results took \~2 minutes.
+
+```{r}
+# Creates RMSE values for randomForest and ranger
+# for 100 different seeds
+seeds <- 1:100
+# COMMENTED OUT TO PREVENT ACCIDENTAL RUNNINGS
+#rf_results     <- sapply(seeds, rf_rmse)
+#ranger_results <- sapply(seeds, ranger_rmse)
+```
+
+```{r}
+# Summary Statistics
+summary(rf_results)
+summary(ranger_results)
+
+mean(rf_results)
+mean(ranger_results)
+
+sd(rf_results)
+sd(ranger_results)
+```
+
+## Results:
+
+Min of RF: 4.747\
+Min of Ranger: 4.746\
+Max of RF: 4.823\
+Max of Ranger: 4.824\
+1st Quartile Values (RF, Ranger): 4.781, 4.773\
+2nd Quartile / Median: 4.789, 4.785\
+3rd Quartile: 4.804, 4.795\
+**Mean of RF: 4.791685**\
+**Mean of Ranger: 4.784328**\
+SD of RF: 0.01599677\
+SD of Ranger: 0.01627517
+
+From these results, it seems that `ranger` is consistently more accurate than `randomForest` is, even if the difference is quite small. Just as confirmation, we will conduct permutation testing to see if this difference is statistically significant.
+
+```{r}
+set.seed(123)
+
+# Differences between models
+# Positive means ranger is better
+# Negative means randomForest is better
+diffs <- ranger_results - rf_results
+# Mean difference between models
+observed_diff <- mean(diffs)
+
+# Number of test statistic
+B <- 10000
+# We randomly decide whether or not, for each statistic,
+# the winner of the RMSE difference is the ranger model
+# (the sign is positive) or the randomForest model
+# (the sign is negative) and recalculate the differences.
+perm_diffs <- replicate(B, {
+  signs <- sample(c(-1, 1), length(diffs), replace = TRUE)
+  mean(diffs * signs)
+})
+
+# How many differences in this space where the ranger
+# and randomForest models are randomly chosen to win
+# are as great or greater than the observed difference of
+# +0.00736?
+p_value <- mean(abs(perm_diffs) >= abs(observed_diff))
+p_value
+```
+
+p-value: **0.0027**\
+This is statistically significant under p \< 0.01, meaning that there is a \< 1% chance of the observed difference between the `ranger` and `randomForest` mean RMSE values, in favor of the `ranger` model, under the null hypothesis that this variation is purely due to chance.
+
+Thus, the `ranger` model likely has a statistically significant edge, though small, against the `randomForest` model.
+
+# Lasso, Ridge, & Elastic Net Regression Models
+
+The next regression models that will be tested are the lasso, ridge, and elastic net regression model. These models' main advantage and reason for being tested is its excellence in dealing with a large amount of collinear variables, and this dataset is likely to include many by its very nature; for example, nutritional variables are likely to correlate with each other. All 3 models can be implemented through the same library (glmnet), and the model with the best fit will be extracted.
+
+## Pre-processing the Dataset
+
+The categorical/factor variables of the dataset will cause these models to malfunction. They must be dummy-encoded or converted into separate binary columns.
+
+```{r}
+# For training split set
+data_matrix <- model.matrix(LBDHDD_outcome ~ ., data = train_split)[, -1]
+outcome_vector <- train_split$LBDHDD_outcome
+# For validating data set
+validity_matrix <- model.matrix(LBDHDD_outcome ~ ., data = valid_split)[, -1]
+validity_vector <- valid_split$LBDHDD_outcome
+# For actual test data set
+#test_matrix <- model.matrix(~ ., data = test_clean)[, -1]
+```
+
+## Creating the Models
+
+We are going to be iterating through the different alpha values that control whether glmnet() represents a lasso, ridge, or elastic net model to determine which model gives the best results.
+
+```{r}
+# List of alpha values, ranging from 0 for lasso
+# to 1 for ridge and elastic net for everything in
+# between
+alphas <- seq(0, 1, by = 0.05)
+cv_models <- list()
+
+# Sets seed to prevent randomness in cross validation
+set.seed(123)
+
+# For every alpha, insert to cv_models a model with that
+# alpha 
+for (a in alphas) {
+  cv_models[[as.character(a)]] <- cv.glmnet(
+    data_matrix,
+    outcome_vector,
+    alpha = a,
+    family = "gaussian",
+    standardize = TRUE
+  )
+}
+
+# Tibble with alphas, corresponding MSE values, and
+# the lambda value that gives the minimum MSE for that
+# particular alpha
+results <- data.frame(
+  alpha = alphas,
+  cv_mse = sapply(cv_models, function(m) min(m$cvm)),
+  lambda_min = sapply(cv_models, function(m) m$lambda.min)
+)
+
+results
+
+best <- results[which.min(results$cv_mse), ]
+best
+```
+
+```{r}
+# Grabs best alpha and lambda values
+best_alpha <- best |> pull(alpha)
+best_lambda <- best |> pull(lambda_min)
+best_alpha
+best_lambda
+```
+
+```{r}
+# Creates final elastic net model with best
+# alpha and lambda values
+elastic_model <- glmnet(data_matrix, outcome_vector, alpha = best_alpha, lambda = best_lambda, family = "gaussian")
+#coef(elastic_model)
+```
+
+```{r}
+# Ensures that columns are the same for testing
+# and validity datasets
+all(colnames(data_matrix) == colnames(validity_matrix))
+```
+
+## Testing Validity
+
+```{r}
+# Predictions
+elastic_pred <- predict(
+  elastic_model,
+  newx = validity_matrix,
+  s = best_lambda
+)
+```
+
+## Evaluating Efficacy
+
+```{r}
+# RMSE error compared to SD
+rmse_elastic <- sqrt(mean((validity_vector - elastic_pred)^2))
+rmse_elastic
+sd(validity_vector)
+```
+
+The seed values also change the RMSE values for the elastic net model, but there is likely no point in playing around with it as it is always fairly high above the RMSE for `randomForest`.
+
+# Which Model Comes Out on Top
+
+## RMSE & SD Comparisons
+
+**SD of valid_split HDL-cholesterol outcomes:** 8.961331
+
+**RMSE Values:**\
+lm() model: \~6.038...\
+randomForest() model on average \~4.791...\
+randomForest() model w/ variable exclusion: 4.825...\
+ranger() model on average: \~4.784...\
+ranger() model w/ variable exclusion: 4.846...\
+Elastic Net model: \~5.453...
+
+# Best Model Used on Test Set
+
+While all the models have RMSE values lower than the validity dataset's SD, some are relatively much lower than others.
+
+Based on the RMSE values, the `ranger` model that does not cast out variables (or the unrefined version) works best for this dataset.
+
+## Test Values
+
+This trains on all 1000 observations of the test tibble instead of just on the 800 in the subset.
+
+```{r}
+rf_ranger_final <- ranger(
+  formula = LBDHDD_outcome ~ .,
+  data = train_clean,
+  num.trees = 500,
+  mtry = 62,
+  min.node.size = 5,
+  importance = "permutation",
+  seed = 125
+)
+```
+
+This cleans the dataset of values or levels that are outside of that of the training range. Although this is modifying the test data, this has no impact on the model because the model only knows the training data, so it will have no idea of what it has lost.
+
+```{r}
+# Grabs all factors
+factor_vars <- names(train_clean)[sapply(train_clean, is.factor)]
+
+# Assigns levels from training dataset to levels from
+# test dataset
+# Any unseen levels in test dataset are set to NA
+for (v in factor_vars) {
+  levels(test_clean[[v]]) <- levels(train_clean[[v]])
+}
+```
+
+This predicts on the actual test dataset.
+
+```{r}
+rf_test_pred <- predict(
+  rf_ranger_final,
+  data = test_clean
+)
+```
+
+This converts the prediction vector to a CSV.
+
+```{r}
+submission <- data.frame(
+  LBDHDD_outcome = rf_test_pred$predictions
+)
+
+write.csv(
+  submission,
+  "pred.csv",
+  row.names = FALSE
+)
+```
+
+## Conclusion
+
+Consistently, across all models, BMI, waist circumference, yearly alcohol intake, age, gender, and current alcohol levels were the strongest predictors of HDL-cholesterol levels.
+
+Every dataset is different and, thus, necessitates a different prediction model. While the random forest model achieved the best RMSE result, this could simply be because of the dataset's inherent nonlinearity, sheer amount of variables, and mixture of numeric and categorical variables, and these are some of random forest's strong points.
+
+A different dataset with as many variables but more linearity would likely see the elastic net model winning out here. Even the `lm()` model may have a chance to succeed.
+
+No one size fits all, and this is not more true than when it comes to regression.
